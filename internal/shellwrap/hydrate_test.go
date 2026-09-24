@@ -126,7 +126,9 @@ func TestHydrate_ComprehensivePathStillHydratesDockerIfMissing(t *testing.T) {
 
 	// PATH is comprehensive (pre-seeded by /etc/paths or similar), but DOCKER_HOST
 	// is absent — the second gate condition triggers hydration for curated vars
-	// but must NOT merge PATH.
+	// and appends MISSING login PATH entries (preserving existing order) instead
+	// of leaving PATH untouched (issue #439 follow-up: ambient brew without
+	// shims must still gain shims).
 	t.Setenv("PATH", "/usr/local/bin:/usr/bin:/bin")
 	os.Unsetenv("DOCKER_HOST")
 	os.Unsetenv("DOCKER_CONTEXT")
@@ -146,11 +148,12 @@ func TestHydrate_ComprehensivePathStillHydratesDockerIfMissing(t *testing.T) {
 
 	assert.Equal(t, "unix:///Users/me/.docker/run/docker.sock", os.Getenv("DOCKER_HOST"))
 
-	// PATH must not be modified — it was already comprehensive.
-	assert.Equal(t, "/usr/local/bin:/usr/bin:/bin", os.Getenv("PATH"),
-		"comprehensive PATH must not be merged")
-	assert.NotContains(t, snapshot, "PATH",
-		"PATH must not appear in the snapshot when unchanged")
+	// Missing login entries are appended, existing order preserved.
+	assert.True(t, strings.HasPrefix(os.Getenv("PATH"), "/usr/local/bin:/usr/bin:/bin"),
+		"existing comprehensive PATH order must be preserved, got %q", os.Getenv("PATH"))
+	assert.Contains(t, os.Getenv("PATH"), "/opt/homebrew/bin",
+		"missing login PATH entries must be appended even when PATH looks comprehensive")
+	assert.Contains(t, snapshot, "PATH")
 	assert.Contains(t, snapshot, "DOCKER_HOST")
 }
 

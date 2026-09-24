@@ -109,6 +109,7 @@ func TestDockerPathEnhancement(t *testing.T) {
 
 	t.Run("PATH enhancement skipped for comprehensive paths", func(t *testing.T) {
 		// Set up a comprehensive PATH that already includes common tool directories
+		t.Cleanup(withFakeLoginShellPath(""))
 		os.Setenv("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
 
 		manager := NewManager(&EnvConfig{
@@ -128,9 +129,12 @@ func TestDockerPathEnhancement(t *testing.T) {
 			}
 		}
 
-		// Should NOT be enhanced because it already has /usr/local/bin
-		assert.Equal(t, "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", envMap["PATH"],
-			"Comprehensive PATH should not be enhanced")
+		// Comprehensive PATH keeps its order; missing static entries may be
+		// appended (merge-missing, issue #439 follow-up) but existing entries
+		// must never be reordered or duplicated.
+		require.Contains(t, envMap, "PATH")
+		assert.True(t, strings.HasPrefix(envMap["PATH"], "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"),
+			"Comprehensive PATH order must be preserved, got %q", envMap["PATH"])
 	})
 }
 

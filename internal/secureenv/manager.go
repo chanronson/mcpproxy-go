@@ -405,13 +405,19 @@ func (m *Manager) ensureComprehensivePath(envVars []string) []string {
 // parent process.
 //
 // Enhancement is gated on EnvConfig.EnhancePath being explicitly opted in
-// (true today only for stdio upstream servers — see core/client.go) and on
-// the existing PATH NOT already containing a comprehensive tool directory.
+// (true today only for stdio upstream servers — see core/client.go).
 // Issue #439: the previous gate `len(pathParts) <= 2` blocked enhancement
 // for the launchd-handed `/usr/bin:/bin:/usr/sbin:/sbin` (4 entries), which
 // is exactly the bad PATH that triggers the bug. We drop that gate and
 // instead rely on login-shell capture + static discovery to enrich PATH
 // whenever it lacks /usr/local/bin or /opt/homebrew/bin.
+//
+// Follow-up: when PATH already looks comprehensive (contains a common tool
+// dir, e.g. pre-seeded by /etc/paths), we must still append MISSING login
+// + static entries (mise shims, ~/.local/bin with uvx, etc.) instead of
+// returning unchanged. Returning unchanged dropped user shims whenever the
+// ambient PATH had brew but not the shims — the Finder-launch failure where
+// `open -a` from a terminal worked.
 func (m *Manager) buildEnhancedPath(existingPath string) string {
 	sep := string(os.PathListSeparator)
 
@@ -421,30 +427,27 @@ func (m *Manager) buildEnhancedPath(existingPath string) string {
 
 	pathParts := strings.Split(existingPath, sep)
 
-	// If PATH already contains a common tool directory the user is fine —
-	// don't pollute their carefully-set PATH with login-shell capture.
-	commonToolDirs := []string{"/usr/local/bin", "/opt/homebrew/bin"}
-	if runtime.GOOS == osWindows {
-		commonToolDirs = []string{`C:\Program Files\Docker\Docker\resources\bin`}
-	}
-	for _, toolDir := range commonToolDirs {
-		for _, pathPart := range pathParts {
-			if pathPart == toolDir {
-				return existingPath
-			}
-		}
-	}
-
 	if !m.config.EnhancePath {
 		return existingPath
 	}
 
-	// Compose: login-shell PATH first (highest priority — captures the
-	// user's actual interactive PATH including mise/asdf/Colima/custom
-	// shims), then statically-discovered well-known directories (deterministic
-	// floor when login-shell capture is empty / contaminated / unavailable),
-	// then the existing PATH (preserves anything the operator deliberately
-	// set on the daemon).
+	commonToolDirs := []string{"/usr/local/bin", "/opt/homebrew/bin"}
+	if runtime.GOOS == osWindows {
+		commonToolDirs = []string{`C:\Program Files\Docker\Docker\resources\bin`}
+	}
+	comprehensive := false
+	for _, toolDir := range commonToolDirs {
+		for _, pathPart := range pathParts {
+			if pathPart == toolDir {
+				comprehensive = true
+				break
+			}
+		}
+		if comprehensive {
+			break
+		}
+	}
+
 	enhancedParts := make([]string, 0, len(m.pathDiscovery.DiscoveredPaths)+len(pathParts)+8)
 	seen := make(map[string]struct{}, len(enhancedParts))
 	add := func(p string) {
@@ -458,6 +461,30 @@ func (m *Manager) buildEnhancedPath(existingPath string) string {
 		enhancedParts = append(enhancedParts, p)
 	}
 
+	if comprehensive {
+		// Preserve the operator's PATH order; append only entries that are
+		// missing (login shims first, then static discovery). No reordering,
+		// no duplicates — terminal launches keep priority.
+		for _, p := range pathParts {
+			add(p)
+		}
+		if loginShellPATHFn != nil {
+			for _, p := range strings.Split(loginShellPATHFn(), sep) {
+				add(p)
+			}
+		}
+		for _, p := range m.pathDiscovery.DiscoveredPaths {
+			add(p)
+		}
+		return strings.Join(enhancedParts, sep)
+	}
+
+	// Minimal (launchd) case: login-shell PATH first (highest priority —
+	// captures the user's actual interactive PATH including mise/asdf/Colima/
+	// custom shims), then statically-discovered well-known directories
+	// (deterministic floor when login-shell capture is empty / contaminated /
+	// unavailable), then the existing PATH (preserves anything the operator
+	// deliberately set on the daemon).
 	if loginShellPATHFn != nil {
 		for _, p := range strings.Split(loginShellPATHFn(), sep) {
 			add(p)

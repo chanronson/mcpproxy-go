@@ -72,6 +72,12 @@ func isBashLikeShell(shell string) bool {
 
 // resolveLoginShell returns the user's preferred login shell, respecting the
 // $SHELL environment variable and falling back to platform defaults.
+//
+// On macOS the default login shell since Catalina is /bin/zsh, so when $SHELL
+// is unset (typical for Finder/Dock/launchd launches where launchctl getenv
+// SHELL is empty) we prefer /bin/zsh over /bin/bash. The old /bin/bash
+// fallback missed zsh-only PATH entries (issue #439 follow-up: ~/.zshrc is
+// never sourced by bash, and zsh -l never sources ~/.zshrc either).
 func resolveLoginShell() string {
 	shell := os.Getenv("SHELL")
 	if shell != "" {
@@ -82,6 +88,13 @@ func resolveLoginShell() string {
 			return cs
 		}
 		return defaultWindowsShell
+	}
+	if runtime.GOOS == "darwin" {
+		// Modern macOS default. Existence check keeps this portable for
+		// tests/containers without /bin/zsh.
+		if _, err := os.Stat("/bin/zsh"); err == nil {
+			return "/bin/zsh"
+		}
 	}
 	return defaultUnixShell
 }

@@ -61,7 +61,14 @@ func TestWrapWithUserShell_FallbackWhenShellUnset(t *testing.T) {
 	}
 	t.Setenv("SHELL", "")
 	shell, args := WrapWithUserShell(nil, "docker", []string{"version"})
-	assert.Equal(t, "/bin/bash", shell, "should fall back to /bin/bash when $SHELL is empty")
+	// macOS (Catalina+) defaults to zsh; elsewhere bash. See resolveLoginShell.
+	want := "/bin/bash"
+	if runtime.GOOS == "darwin" {
+		if _, err := os.Stat("/bin/zsh"); err == nil {
+			want = "/bin/zsh"
+		}
+	}
+	assert.Equal(t, want, shell, "should fall back to login shell default when $SHELL is empty")
 	require.Len(t, args, 3)
 	assert.Equal(t, "-l", args[0])
 	assert.Equal(t, "-c", args[1])

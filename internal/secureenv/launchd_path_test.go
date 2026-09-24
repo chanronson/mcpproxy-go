@@ -174,11 +174,12 @@ func TestLaunchdMinimalPath_NoLoginShellAvailable(t *testing.T) {
 	assert.Greater(t, len(parts), 4, "even without login-shell capture, static discovery must enhance the launchd-minimal PATH")
 }
 
-// TestLaunchdMinimalPath_AlreadyComprehensive verifies the existing
+// TestLaunchdMinimalPath_AlreadyComprehensive verifies the merge-missing
 // behaviour: when PATH is already comprehensive (contains /usr/local/bin or
-// /opt/homebrew/bin), do not touch it. Same as the existing
-// "PATH enhancement skipped for comprehensive paths" test, restated for
-// clarity in the launchd context.
+// /opt/homebrew/bin), existing order is preserved but MISSING login-shell and
+// static entries are still appended. Previously this returned unchanged, which
+// dropped user shims (mise, ~/.local/bin with uvx) whenever ambient had brew
+// but not the shims — the Finder-launch failure where `open -a` worked.
 func TestLaunchdMinimalPath_AlreadyComprehensive(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("launchd PATH semantics are macOS/Linux-only")
@@ -211,8 +212,11 @@ func TestLaunchdMinimalPath_AlreadyComprehensive(t *testing.T) {
 	})
 
 	pathVal := getPATH(manager.BuildSecureEnvironment())
-	assert.Equal(t, comprehensivePath, pathVal,
-		"comprehensive PATH must be returned unchanged — terminal-launched processes should not be polluted by login-shell capture")
+	// Comprehensive PATH keeps its order but gains missing login shims.
+	assert.True(t, strings.HasPrefix(pathVal, comprehensivePath),
+		"comprehensive PATH order must be preserved, got %q", pathVal)
+	assert.Contains(t, pathVal, "/Users/test/.local/share/mise/shims",
+		"missing login-shell shims must be appended even when PATH looks comprehensive")
 }
 
 // TestBuildSecureEnvironment_AllowsHydratedDockerVars verifies the allow-list

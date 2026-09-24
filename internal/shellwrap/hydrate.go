@@ -66,7 +66,7 @@ func doCaptureLoginShellEnv(logger *zap.Logger) map[string]string {
 	}
 
 	shell := resolveLoginShell()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Bracket `env -0` with unique markers so rc-file banner output (welcome
@@ -74,7 +74,24 @@ func doCaptureLoginShellEnv(logger *zap.Logger) map[string]string {
 	// the value we parse. We deliberately build the argv ourselves rather than
 	// going through WrapWithUserShell because shellescape would quote the
 	// command and suppress expansion.
-	script := `printf '` + loginShellEnvMarkerBegin + `'; env -0; printf '` + loginShellEnvMarkerEnd + `'`
+	//
+	// Issue #439 follow-up: `zsh -l` sources ~/.zprofile but NOT ~/.zshrc,
+	// where ohmy-zsh/nvm/mise/brew PATH entries live. A clean
+	// `env -i ... zsh -l -c env` therefore misses ~/.local/bin even though an
+	// interactive terminal has it. Explicitly source the interactive rc files
+	// (best-effort, stderr suppressed) so GUI/launchd captures approximate the
+	// interactive PATH. `-l` already sources the login files; re-sourcing is
+	// harmless. For bash, `-l` sources ~/.bash_profile/~/.profile but not
+	// ~/.bashrc, so source it too for parity.
+	rcSource := ""
+	lowerShell := strings.ToLower(shell)
+	switch {
+	case strings.Contains(lowerShell, "zsh"):
+		rcSource = `[ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc" >/dev/null 2>&1; `
+	case strings.Contains(lowerShell, "bash"):
+		rcSource = `[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" >/dev/null 2>&1; `
+	}
+	script := rcSource + `printf '` + loginShellEnvMarkerBegin + `'; env -0; printf '` + loginShellEnvMarkerEnd + `'`
 	cmd := exec.CommandContext(ctx, shell, "-l", "-c", script)
 	out, err := cmd.Output()
 	if err != nil {
@@ -212,17 +229,23 @@ func HydrateFromLoginShell(logger *zap.Logger) (applied bool, snapshot map[strin
 
 	sep := string(os.PathListSeparator)
 
-	// PATH: merge login-first so docker / uvx / npx resolve correctly.
-	// Only merge when PATH looks launchd-minimal — a comprehensive PATH is left
-	// untouched even if curated vars triggered hydration.
-	if pathIsMinimal {
-		if loginPath := env["PATH"]; loginPath != "" {
-			current := os.Getenv("PATH")
-			merged := mergePathUnique(loginPath, current, sep)
-			if merged != current {
-				_ = os.Setenv("PATH", merged)
-				snapshot["PATH"] = merged
-			}
+	// PATH: merge login-first when launchd-minimal so docker / uvx / npx
+	// resolve correctly. When PATH already looks comprehensive (e.g.
+	// pre-seeded by /etc/paths with brew but missing ~/.local/bin shims —
+	// the Finder-launch failure where `open -a` from a terminal worked), still
+	// append MISSING login entries instead of leaving PATH untouched, preserving
+	// existing order.
+	if loginPath := env["PATH"]; loginPath != "" {
+		current := os.Getenv("PATH")
+		var merged string
+		if pathIsMinimal {
+			merged = mergePathUnique(loginPath, current, sep)
+		} else {
+			merged = mergePathUnique(current, loginPath, sep)
+		}
+		if merged != current {
+			_ = os.Setenv("PATH", merged)
+			snapshot["PATH"] = merged
 		}
 	}
 
